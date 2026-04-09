@@ -1,8 +1,6 @@
 # 🐱 Neko-Claw AI Controller
 
-Neko-Claw is a powerful and "pawsome" computer control superapp that allows you to interact with your Windows machine using AI. Featuring a sleek cat-themed UI and powered by Zhipu AI (GLM-4), it provides a safe yet efficient way to automate tasks through PowerShell commands.
-
-![Neko-Claw UI](.qwen/screenshot_placeholder.png) *Note: Aesthetic cat-themed interface with amber and stone color palette.*
+Neko-Claw is a powerful and "pawsome" computer control superapp that allows you to interact with your Windows machine using AI. Featuring a sleek cat-themed UI and powered by Zhipu AI (GLM-4.7-flash), it provides a safe yet efficient way to automate tasks through PowerShell commands.
 
 ## 🐾 Features
 
