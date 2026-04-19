@@ -132,7 +132,7 @@ func loadSettings() {
 		// Save defaults to file (we already hold the lock)
 		defaultData, marshalErr := json.MarshalIndent(currentSettings, "", "  ")
 		if marshalErr == nil {
-			os.WriteFile(settingsFilePath, defaultData, 0644)
+			os.WriteFile(settingsFilePath, defaultData, 0600)
 		}
 		return
 	}
@@ -156,7 +156,7 @@ func saveSettings() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(settingsFilePath, data, 0644)
+	return os.WriteFile(settingsFilePath, data, 0600)
 }
 
 func handleSettings(w http.ResponseWriter, r *http.Request) {
