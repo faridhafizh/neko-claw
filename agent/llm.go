@@ -9,8 +9,16 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 
 	openai "github.com/sashabaranov/go-openai"
+)
+
+var (
+	cachedClient  *openai.Client
+	cachedApiKey  string
+	cachedApiUrl  string
+	clientMutex   sync.RWMutex
 )
 
 type ChatRequest struct {
@@ -55,14 +63,36 @@ func getOpenAIClient() *openai.Client {
 	apiUrl := currentSettings.ApiUrl
 	settingsMutex.RUnlock()
 
+	clientMutex.RLock()
+	if cachedClient != nil && cachedApiKey == apiKey && cachedApiUrl == apiUrl {
+		client := cachedClient
+		clientMutex.RUnlock()
+		return client
+	}
+	clientMutex.RUnlock()
+
+	clientMutex.Lock()
+	defer clientMutex.Unlock()
+
+	// Double check pattern
+	if cachedClient != nil && cachedApiKey == apiKey && cachedApiUrl == apiUrl {
+		return cachedClient
+	}
+
 	config := openai.DefaultConfig(apiKey)
 	if apiUrl != "" {
-		if before, ok :=strings.CutSuffix(apiUrl, "/chat/completions"); ok  {
-			apiUrl = before
+		if before, ok := strings.CutSuffix(apiUrl, "/chat/completions"); ok {
+			config.BaseURL = before
+		} else {
+			config.BaseURL = apiUrl
 		}
-		config.BaseURL = apiUrl
 	}
-	return openai.NewClientWithConfig(config)
+
+	cachedClient = openai.NewClientWithConfig(config)
+	cachedApiKey = apiKey
+	cachedApiUrl = apiUrl
+
+	return cachedClient
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
