@@ -25,6 +25,30 @@ type ChatResponse struct {
 
 var conversationHistory []openai.ChatCompletionMessage
 
+var availableTools = []openai.Tool{
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "run_powershell_command",
+			Description: "Propose a powershell command to execute on the user's computer. The user must approve it first.",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"command": {
+						"type": "string",
+						"description": "The exact powershell command to run."
+					},
+					"description": {
+						"type": "string",
+						"description": "A short summary explaining what this command does safely."
+					}
+				},
+				"required": ["command", "description"]
+			}`),
+		},
+	},
+}
+
 func getOpenAIClient() *openai.Client {
 	settingsMutex.RLock()
 	apiKey := currentSettings.ApiKey
@@ -79,36 +103,12 @@ Wait for the tool result before proceeding.`,
 		return
 	}
 
-	tools := []openai.Tool{
-		{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        "run_powershell_command",
-				Description: "Propose a powershell command to execute on the user's computer. The user must approve it first.",
-				Parameters: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"command": {
-							"type": "string",
-							"description": "The exact powershell command to run."
-						},
-						"description": {
-							"type": "string",
-							"description": "A short summary explaining what this command does safely."
-						}
-					},
-					"required": ["command", "description"]
-				}`),
-			},
-		},
-	}
-
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
 			Model:    model,
 			Messages: conversationHistory,
-			Tools:    tools,
+			Tools:    availableTools,
 		},
 	)
 
@@ -218,29 +218,7 @@ func handleApproveCommand(w http.ResponseWriter, r *http.Request) {
 		openai.ChatCompletionRequest{
 			Model:    model,
 			Messages: conversationHistory,
-			Tools: []openai.Tool{
-				{
-					Type: openai.ToolTypeFunction,
-					Function: &openai.FunctionDefinition{
-						Name:        "run_powershell_command",
-						Description: "Propose a powershell command to execute on the user's computer. The user must approve it first.",
-						Parameters: json.RawMessage(`{
-							"type": "object",
-							"properties": {
-								"command": {
-									"type": "string",
-									"description": "The exact powershell command to run."
-								},
-								"description": {
-									"type": "string",
-									"description": "A short summary explaining what this command does safely."
-								}
-							},
-							"required": ["command", "description"]
-						}`),
-					},
-				},
-			},
+			Tools:    availableTools,
 		},
 	)
 
