@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type Settings struct {
@@ -18,22 +19,38 @@ type Settings struct {
 }
 
 var (
-	currentSettings  Settings
 	settingsMutex    sync.RWMutex
-	settingsFilePath = filepath.Join("data", "settings.json")
 	pendingCommands  = make(map[string]*PendingCommand)
 	pendingCmdsMutex sync.RWMutex
 )
 
 type PendingCommand struct {
 	ID          string   `json:"id"`
+	SessionID   string   `json:"sessionId"`
 	Command     string   `json:"command"`
 	Arguments   []string `json:"arguments"`
 	Description string   `json:"description"`
 }
 
 func main() {
-	loadSettings()
+	// Initialize database first
+	if err := initDatabase(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	// Initialize stores (they now use the database)
+	if err := initMemoryStore(); err != nil {
+		log.Printf("Warning: Could not initialize memory store: %v", err)
+	}
+	if err := initSoulStore(); err != nil {
+		log.Printf("Warning: Could not initialize soul store: %v", err)
+	}
+	if err := initChatHistoryStore(); err != nil {
+		log.Printf("Warning: Could not initialize chat history store: %v", err)
+	}
+
+	// Load settings defaults if not set
+	initSettingsDefaults()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -48,17 +65,40 @@ func main() {
 	// API Handlers
 	mux.HandleFunc("/api/settings", handleSettings)
 	mux.HandleFunc("/api/chat", handleChat)
+	mux.HandleFunc("/api/chat/stream", handleChatStream)
 	mux.HandleFunc("/api/command/approve", handleApproveCommand)
 	mux.HandleFunc("/api/command/reject", handleRejectCommand)
 
+	// Memory handlers
+	mux.HandleFunc("/api/memory", handleMemory)
+	mux.HandleFunc("/api/memory/search", handleMemorySearch)
+	mux.HandleFunc("/api/memory/stats", handleMemoryStats)
+
+	// Soul handlers
+	mux.HandleFunc("/api/souls", handleSouls)
+	mux.HandleFunc("/api/souls/active", handleActiveSoul)
+
+	// Additional System endpoint
+	mux.HandleFunc("/api/system/info", handleSystemInfo)
+
+	// Filesystem endpoints
+	mux.HandleFunc("/api/files", handleFilesystem)
+	mux.HandleFunc("/api/files/read", handleFileRead)
+	mux.HandleFunc("/api/files/write", handleFileWrite)
+	mux.HandleFunc("/api/files/mkdir", handleFileMkdir)
+
+	// Chat history handlers
+	mux.HandleFunc("/api/chats", handleChatSessions)
+	mux.HandleFunc("/api/chats/{id}", handleChatSession)
+
 	// Static file serving of the UI
 	uiPath := filepath.Join("..", "ui", "out")
-	
+
 	// Auto-build UI if not exists
 	if _, err := os.Stat(uiPath); os.IsNotExist(err) {
 		fmt.Println("UI 'out' directory not found. Building Next.js UI...")
 		uiDir := filepath.Join("..", "ui")
-		
+
 		fmt.Println("Running 'npm install'...")
 		installCmd := exec.Command("npm", "install")
 		installCmd.Dir = uiDir
@@ -67,14 +107,15 @@ func main() {
 		if err := installCmd.Run(); err != nil {
 			log.Fatalf("Failed to run npm install: %v", err)
 		}
-		
+
 		fmt.Println("Running 'npm run build'...")
 		buildCmd := exec.Command("npm", "run", "build")
 		buildCmd.Dir = uiDir
 		buildCmd.Stdout = os.Stdout
 		buildCmd.Stderr = os.Stderr
 		if err := buildCmd.Run(); err != nil {
-			log.Fatalf("Failed to run npm run build: %v", err)
+			log.Printf("Warning: Failed to run npm run build: %v", err)
+			log.Println("Please build the UI manually or check for errors.")
 		}
 		fmt.Println("UI built successfully!")
 	}
@@ -92,7 +133,7 @@ func main() {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, PATCH")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization")
 
 		if r.Method == "OPTIONS" {
@@ -104,66 +145,35 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func loadSettings() {
-	settingsMutex.Lock()
-	defer settingsMutex.Unlock()
+// ── Settings (backed by SQLite) ────────────────────────────────────────────
 
-	// Ensure data directory exists
-	dataDir := filepath.Dir(settingsFilePath)
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Printf("Warning: Could not create data directory: %v", err)
+func initSettingsDefaults() {
+	if dbGetSetting("model") == "" {
+		dbSetSetting("model", "glm-4.7-flash")
 	}
-
-	data, err := os.ReadFile(settingsFilePath)
-	if err != nil {
-		// File doesn't exist or can't be read - use defaults
-		if os.IsNotExist(err) {
-			log.Println("No settings file found, using defaults")
-		} else {
-			log.Printf("Warning: Could not read settings file: %v", err)
-		}
-		// Apply defaults
-		if currentSettings.Model == "" {
-			currentSettings.Model = "glm-4.7-flash"
-		}
-		if currentSettings.ApiUrl == "" {
-			currentSettings.ApiUrl = "https://open.bigmodel.cn/api/paas/v4/"
-		}
-		// Save defaults to file (we already hold the lock)
-		defaultData, marshalErr := json.MarshalIndent(currentSettings, "", "  ")
-		if marshalErr == nil {
-			os.WriteFile(settingsFilePath, defaultData, 0600)
-		}
-		return
-	}
-
-	if err := json.Unmarshal(data, &currentSettings); err != nil {
-		log.Printf("Warning: Could not parse settings file: %v", err)
-	}
-
-	if currentSettings.Model == "" {
-		currentSettings.Model = "glm-4.7-flash"
-	}
-	if currentSettings.ApiUrl == "" {
-		currentSettings.ApiUrl = "https://open.bigmodel.cn/api/paas/v4/"
+	if dbGetSetting("apiUrl") == "" {
+		dbSetSetting("apiUrl", "https://open.bigmodel.cn/api/paas/v4/")
 	}
 }
 
-func saveSettings() error {
-	settingsMutex.RLock()
-	data, err := json.MarshalIndent(currentSettings, "", "  ")
-	settingsMutex.RUnlock()
-	if err != nil {
-		return err
+func getSettings() Settings {
+	return Settings{
+		ApiKey: dbGetSetting("apiKey"),
+		Model:  dbGetSetting("model"),
+		ApiUrl: dbGetSetting("apiUrl"),
 	}
-	return os.WriteFile(settingsFilePath, data, 0600)
+}
+
+func setSettings(s Settings) {
+	dbSetSetting("apiKey", s.ApiKey)
+	dbSetSetting("model", s.Model)
+	dbSetSetting("apiUrl", s.ApiUrl)
 }
 
 func handleSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		settingsMutex.RLock()
-		json.NewEncoder(w).Encode(currentSettings)
-		settingsMutex.RUnlock()
+		s := getSettings()
+		json.NewEncoder(w).Encode(s)
 		return
 	}
 
@@ -174,15 +184,251 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		settingsMutex.Lock()
-		currentSettings = newSettings
-		settingsMutex.Unlock()
-
-		saveSettings()
+		setSettings(newSettings)
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		return
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// Memory API Handlers
+func handleMemory(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		category := r.URL.Query().Get("category")
+		limit := 0
+		memories := memoryStore.GetMemories(category, limit)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"memories": memories,
+			"count":    len(memories),
+		})
+
+	case "POST":
+		var req struct {
+			Content  string   `json:"content"`
+			Category string   `json:"category"`
+			Priority int      `json:"priority"`
+			Tags     []string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := memoryStore.AddMemory(req.Content, req.Category, req.Priority, req.Tags); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"status": "created"})
+
+	case "DELETE":
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "Missing id parameter", http.StatusBadRequest)
+			return
+		}
+
+		if err := memoryStore.DeleteMemory(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleMemorySearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	limit := 10
+
+	memories := memoryStore.SearchMemories(query, limit)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"memories": memories,
+		"count":    len(memories),
+	})
+}
+
+func handleMemoryStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats := memoryStore.GetMemoryStats()
+	json.NewEncoder(w).Encode(stats)
+}
+
+// Soul API Handlers
+func handleSouls(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	souls := soulStore.GetAllSouls()
+	activeSoul := soulStore.GetActiveSoul()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"souls":         souls,
+		"activeSoul":    soulStore.GetActiveSoulID(),
+		"activeProfile": activeSoul,
+	})
+}
+
+func handleActiveSoul(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		activeSoul := soulStore.GetActiveSoul()
+		json.NewEncoder(w).Encode(activeSoul)
+		return
+	}
+
+	if r.Method == "POST" {
+		var req struct {
+			SoulID string `json:"soulId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := soulStore.SetActiveSoul(req.SoulID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// Chat History API Handlers
+func handleChatSessions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		includeArchived := r.URL.Query().Get("archived") == "true"
+		sessions := chatHistoryStore.GetSessions(includeArchived)
+
+		// Return summary (without full messages for list view)
+		type SessionSummary struct {
+			ID           string    `json:"id"`
+			Title        string    `json:"title"`
+			CreatedAt    time.Time `json:"createdAt"`
+			UpdatedAt    time.Time `json:"updatedAt"`
+			Archived     bool      `json:"archived"`
+			MessageCount int       `json:"messageCount"`
+			LastMessage  string    `json:"lastMessage"`
+		}
+
+		summaries := make([]SessionSummary, len(sessions))
+		for i, s := range sessions {
+			summaries[i] = SessionSummary{
+				ID:           s.ID,
+				Title:        s.Title,
+				CreatedAt:    s.CreatedAt,
+				UpdatedAt:    s.UpdatedAt,
+				Archived:     s.Archived,
+				MessageCount: len(s.Messages),
+				LastMessage:  s.LastMessagePreview(),
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"sessions": summaries,
+		})
+
+	case "POST":
+		var req struct {
+			Title string `json:"title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if req.Title == "" {
+			req.Title = "New Chat"
+		}
+
+		session := chatHistoryStore.CreateSession(req.Title)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(session)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleChatSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	switch r.Method {
+	case "GET":
+		session := chatHistoryStore.GetSession(id)
+		if session == nil {
+			http.Error(w, "Session not found", http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(session)
+
+	case "PATCH":
+		var req struct {
+			Action string `json:"action"` // "archive", "unarchive", "delete", "rename"
+			Title  string `json:"title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var err error
+		switch req.Action {
+		case "archive":
+			err = chatHistoryStore.ArchiveSession(id)
+		case "unarchive":
+			err = chatHistoryStore.UnarchiveSession(id)
+		case "delete":
+			err = chatHistoryStore.DeleteSession(id)
+		case "rename":
+			err = chatHistoryStore.UpdateSessionTitle(id, req.Title)
+		default:
+			http.Error(w, "Invalid action", http.StatusBadRequest)
+			return
+		}
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// System API Handler
+func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	info := getSystemInfo()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
 }

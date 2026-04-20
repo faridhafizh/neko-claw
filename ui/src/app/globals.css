@@ -1,17 +1,137 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+  --bg-base: #0c0a09;
+  --bg-surface: #1c1917;
+  --bg-elevated: #28211e;
+  --border: #3d2f28;
+  --accent: #f59e0b;
+  --accent-dim: #92400e;
+  --text-primary: #fafaf9;
+  --text-secondary: #a8a29e;
+  --text-muted: #57534e;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--bg-base);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
+
+/* ─── Scrollbar ─────────────────────────────── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3d2f28;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #f59e0b;
+}
+
+/* ─── Animations ────────────────────────────── */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeSlideLeft {
+  from { opacity: 0; transform: translateX(-16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes fadeSlideRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes popIn {
+  0%   { opacity: 0; transform: scale(0.92); }
+  60%  { transform: scale(1.02); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  50%       { box-shadow: 0 0 12px 3px rgba(245, 158, 11, 0.3); }
+}
+
+@keyframes typing-dot {
+  0%, 80%, 100% { transform: scale(0.7); opacity: 0.4; }
+  40%           { transform: scale(1); opacity: 1; }
+}
+
+@keyframes slideFromBottom {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Utility Classes ───────────────────────── */
+.animate-fade-slide-in    { animation: fadeSlideIn 0.25s ease both; }
+.animate-fade-slide-left  { animation: fadeSlideLeft 0.2s ease both; }
+.animate-fade-slide-right { animation: fadeSlideRight 0.2s ease both; }
+.animate-pop-in           { animation: popIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.animate-from-bottom      { animation: slideFromBottom 0.3s ease both; }
+.animate-pulse-glow       { animation: pulse-glow 2s ease-in-out infinite; }
+
+/* ─── Typing Indicator ──────────────────────── */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: typing-dot 1.4s ease-in-out infinite;
+}
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+/* ─── Message Markdown ──────────────────────── */
+.message-content code {
+  background: rgba(0,0,0,0.35);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  color: #fbbf24;
+}
+.message-content pre {
+  background: rgba(0,0,0,0.4);
+  border: 1px solid #3d2f28;
+  border-radius: 8px;
+  padding: 10px 14px;
+  overflow-x: auto;
+  margin: 6px 0;
+  font-size: 0.82em;
+}
+.message-content pre code {
+  background: none;
+  padding: 0;
+  color: #6ee7b7;
+}
+.message-content strong { font-weight: 700; }
+.message-content em { font-style: italic; color: #d6d3d1; }
+.message-content ul { list-style: disc; padding-left: 1.25em; margin: 4px 0; }
+.message-content ol { list-style: decimal; padding-left: 1.25em; margin: 4px 0; }
+.message-content li { margin: 2px 0; }
+.message-content p { margin: 4px 0; }

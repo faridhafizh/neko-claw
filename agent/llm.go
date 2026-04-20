@@ -4,95 +4,68 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
-var (
-	cachedClient  *openai.Client
-	cachedApiKey  string
-	cachedApiUrl  string
-	clientMutex   sync.RWMutex
-)
-
 type ChatRequest struct {
-	Message string `json:"message"`
+	Message   string `json:"message"`
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 type ChatResponse struct {
 	Reply          string          `json:"reply"`
+	SessionID      string          `json:"sessionId"`
 	HasPendingCmd  bool            `json:"hasPendingCmd"`
 	PendingCommand *PendingCommand `json:"pendingCommand,omitempty"`
+	ActiveSoul     string          `json:"activeSoul"`
+	SoulEmoji      string          `json:"soulEmoji"`
+	MemoryCount    int             `json:"memoryCount"`
 }
 
-var conversationHistory []openai.ChatCompletionMessage
-
-var availableTools = []openai.Tool{
-	{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        "run_powershell_command",
-			Description: "Propose a powershell command to execute on the user's computer. The user must approve it first.",
-			Parameters: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"command": {
-						"type": "string",
-						"description": "The exact powershell command to run."
-					},
-					"description": {
-						"type": "string",
-						"description": "A short summary explaining what this command does safely."
-					}
+// powershellTool is the OpenAI function tool definition for proposing PowerShell commands.
+// Defined once at package level to avoid duplication between handleChat and handleApproveCommand.
+var powershellTool = openai.Tool{
+	Type: openai.ToolTypeFunction,
+	Function: &openai.FunctionDefinition{
+		Name:        "run_powershell_command",
+		Description: "Propose a powershell command to execute on the user's computer. The user must approve it first.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"command": {
+					"type": "string",
+					"description": "The exact powershell command to run."
 				},
-				"required": ["command", "description"]
-			}`),
-		},
+				"description": {
+					"type": "string",
+					"description": "A short summary explaining what this command does safely."
+				}
+			},
+			"required": ["command", "description"]
+		}`),
 	},
 }
 
 func getOpenAIClient() *openai.Client {
-	settingsMutex.RLock()
-	apiKey := currentSettings.ApiKey
-	apiUrl := currentSettings.ApiUrl
-	settingsMutex.RUnlock()
+	s := getSettings()
 
-	clientMutex.RLock()
-	if cachedClient != nil && cachedApiKey == apiKey && cachedApiUrl == apiUrl {
-		client := cachedClient
-		clientMutex.RUnlock()
-		return client
-	}
-	clientMutex.RUnlock()
-
-	clientMutex.Lock()
-	defer clientMutex.Unlock()
-
-	// Double check pattern
-	if cachedClient != nil && cachedApiKey == apiKey && cachedApiUrl == apiUrl {
-		return cachedClient
-	}
-
-	config := openai.DefaultConfig(apiKey)
-	if apiUrl != "" {
+	config := openai.DefaultConfig(s.ApiKey)
+	if s.ApiUrl != "" {
+		apiUrl := s.ApiUrl
 		if before, ok := strings.CutSuffix(apiUrl, "/chat/completions"); ok {
-			config.BaseURL = before
-		} else {
-			config.BaseURL = apiUrl
+			apiUrl = before
 		}
+		config.BaseURL = apiUrl
 	}
-
-	cachedClient = openai.NewClientWithConfig(config)
-	cachedApiKey = apiKey
-	cachedApiUrl = apiUrl
-
-	return cachedClient
+	return openai.NewClientWithConfig(config)
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
@@ -107,52 +80,105 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(conversationHistory) == 0 {
-		conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
-			Role: openai.ChatMessageRoleSystem,
-			Content: `You are an AI assistant controlling a Windows computer. 
-You can help the user by suggesting powershell commands.
-When you want to run a command, use the tool "run_powershell_command".
-The user will review your command and explicitly approve or reject it.
-Wait for the tool result before proceeding.`,
+	// Get or create session
+	var session *ChatSession
+	if req.SessionID != "" {
+		session = chatHistoryStore.GetSession(req.SessionID)
+	}
+	if session == nil {
+		session = chatHistoryStore.CreateSession("New Chat")
+	}
+
+	// Search for relevant memories based on user message
+	relevantMemories := memoryStore.SearchMemories(req.Message, 5)
+
+	// Build memory context string
+	memoryContext := ""
+	if len(relevantMemories) > 0 {
+		memoryContext = "\n\nRelevant memories from past interactions:\n"
+		for _, mem := range relevantMemories {
+			memoryContext += fmt.Sprintf("- [%s] %s\n", mem.Category, mem.Content)
+			// Update last used timestamp
+			memoryStore.UpdateLastUsed(mem.ID)
+		}
+	}
+
+	// Get system info context
+	sysInfo := getSystemInfo()
+	sysContext := fmt.Sprintf("\n\n[System Context]\nOS: %s\nUser: %s\nCWD: %s\nCPU: %d%%\nRAM: %d/%d MB (%d%%)", 
+		sysInfo.OS, sysInfo.Username, sysInfo.CurrentDir, sysInfo.CPUUsage, sysInfo.RAMUsed, sysInfo.RAMTotal, sysInfo.RAMUsage)
+
+	// Build system prompt with soul, memory, and system context
+	activeSoul := soulStore.GetActiveSoul()
+	systemPrompt := activeSoul.SystemPrompt + memoryContext + sysContext
+
+	// Build conversation from session messages
+	var messages []openai.ChatCompletionMessage
+	messages = append(messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: systemPrompt,
+	})
+	for _, msg := range session.Messages {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
 		})
 	}
 
-	conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
+	// Add current user message
+	messages = append(messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: req.Message,
 	})
 
-	client := getOpenAIClient()
-	settingsMutex.RLock()
-	model := currentSettings.Model
-	settingsMutex.RUnlock()
+	s := getSettings()
 
-	if currentSettings.ApiKey == "" {
+	if s.ApiKey == "" {
 		http.Error(w, "API Key is missing. Silakan isi konfigurasi API Key terlebih dahulu di menu ⚙️ Settings.", http.StatusBadRequest)
 		return
 	}
 
+	client := getOpenAIClient()
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
 	resp, err := client.CreateChatCompletion(
-		context.Background(),
+		ctx,
 		openai.ChatCompletionRequest{
-			Model:    model,
-			Messages: conversationHistory,
-			Tools:    availableTools,
+			Model:    s.Model,
+			Messages: messages,
+			Tools:    []openai.Tool{powershellTool},
 		},
 	)
 
 	if err != nil {
 		log.Printf("Chat completion error: %v", err)
+
+		// Check if it's a rate limit error
+		if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "Rate limit") {
+			http.Error(w, "Rate limit reached. Please wait a moment before sending another message.", http.StatusTooManyRequests)
+			return
+		}
+
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	choice := resp.Choices[0]
-	conversationHistory = append(conversationHistory, choice.Message)
+
+	// Save messages to session
+	chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "user", Content: req.Message})
+	chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "assistant", Content: choice.Message.Content})
+
+	// Get memory stats
+	memStats := memoryStore.GetMemoryStats()
+	memoryCount := memStats["total"].(int)
 
 	res := ChatResponse{
-		Reply: choice.Message.Content,
+		Reply:       choice.Message.Content,
+		SessionID:   session.ID,
+		ActiveSoul:  activeSoul.Name,
+		SoulEmoji:   activeSoul.Emoji,
+		MemoryCount: memoryCount,
 	}
 
 	if len(choice.Message.ToolCalls) > 0 {
@@ -165,6 +191,7 @@ Wait for the tool result before proceeding.`,
 				cmdID := toolCall.ID
 				pendingCmd := &PendingCommand{
 					ID:          cmdID,
+					SessionID:   session.ID,
 					Command:     args["command"],
 					Description: args["description"],
 				}
@@ -220,7 +247,7 @@ func handleApproveCommand(w http.ResponseWriter, r *http.Request) {
 	execCmd := exec.Command("pwsh", "-Command", cmd.Command)
 	output, err := execCmd.CombinedOutput()
 	resultStr := string(output)
-	
+
 	// Clean ANSI escape codes (PowerShell colors)
 	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	resultStr = ansiRegex.ReplaceAllString(resultStr, "")
@@ -229,26 +256,52 @@ func handleApproveCommand(w http.ResponseWriter, r *http.Request) {
 		resultStr += fmt.Sprintf("\nError: %v", err)
 	}
 
-	// Send outcome back to conversation
-	conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
-		Role:       openai.ChatMessageRoleTool,
-		Content:    resultStr,
-		Name:       "run_powershell_command",
-		ToolCallID: req.ID,
-	})
+	// Save command execution result to session
+	if cmd.SessionID != "" {
+		chatHistoryStore.AddMessage(cmd.SessionID, ChatMessage{
+			Role:    "system",
+			Content: fmt.Sprintf("Command executed: %s\nOutput:\n%s", cmd.Command, resultStr),
+		})
+	}
+
+	// Build messages from session for follow-up
+	var messages []openai.ChatCompletionMessage
+	if cmd.SessionID != "" {
+		session := chatHistoryStore.GetSession(cmd.SessionID)
+		if session != nil {
+			activeSoul := soulStore.GetActiveSoul()
+			messages = append(messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: activeSoul.SystemPrompt,
+			})
+			for _, msg := range session.Messages {
+				messages = append(messages, openai.ChatCompletionMessage{
+					Role:    msg.Role,
+					Content: msg.Content,
+				})
+			}
+		}
+	}
+
+	if len(messages) == 0 {
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "success",
+			"output": resultStr,
+			"reply":  "Execution finished.",
+		})
+		return
+	}
 
 	// Prompt the AI again with the result
 	client := getOpenAIClient()
-	settingsMutex.RLock()
-	model := currentSettings.Model
-	settingsMutex.RUnlock()
+	s := getSettings()
 
 	resp, chatErr := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
-			Model:    model,
-			Messages: conversationHistory,
-			Tools:    availableTools,
+			Model:    s.Model,
+			Messages: messages,
+			Tools:    []openai.Tool{powershellTool},
 		},
 	)
 
@@ -257,13 +310,19 @@ func handleApproveCommand(w http.ResponseWriter, r *http.Request) {
 		reply = fmt.Sprintf("Execution finished, but AI encountered an error: %v", chatErr)
 	} else if len(resp.Choices) > 0 {
 		reply = resp.Choices[0].Message.Content
-		conversationHistory = append(conversationHistory, resp.Choices[0].Message)
+		if cmd.SessionID != "" {
+			chatHistoryStore.AddMessage(cmd.SessionID, ChatMessage{
+				Role:    "assistant",
+				Content: reply,
+			})
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"status": "success",
-		"output": resultStr,
-		"reply":  reply,
+		"status":    "success",
+		"output":    resultStr,
+		"reply":     reply,
+		"sessionId": cmd.SessionID,
 	})
 }
 
@@ -282,17 +341,216 @@ func handleRejectCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pendingCmdsMutex.Lock()
+	cmd, exists := pendingCommands[req.ID]
 	delete(pendingCommands, req.ID)
 	pendingCmdsMutex.Unlock()
 
-	conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
-		Role:       openai.ChatMessageRoleTool,
-		Content:    "User rejected the execution of this command.",
-		Name:       "run_powershell_command",
-		ToolCallID: req.ID,
-	})
+	if exists && cmd.SessionID != "" {
+		chatHistoryStore.AddMessage(cmd.SessionID, ChatMessage{
+			Role:    "system",
+			Content: "User rejected the execution of this command.",
+		})
+	}
+
+	sessionID := ""
+	if cmd != nil {
+		sessionID = cmd.SessionID
+	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"status": "rejected",
+		"status":    "rejected",
+		"sessionId": sessionID,
 	})
+}
+
+// ── Streaming Chat Handler (SSE) ────────────────────────────────────────────
+
+func handleChatStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Get or create session
+	var session *ChatSession
+	if req.SessionID != "" {
+		session = chatHistoryStore.GetSession(req.SessionID)
+	}
+	if session == nil {
+		session = chatHistoryStore.CreateSession("New Chat")
+	}
+
+	// Search for relevant memories
+	relevantMemories := memoryStore.SearchMemories(req.Message, 5)
+	memoryContext := ""
+	if len(relevantMemories) > 0 {
+		memoryContext = "\n\nRelevant memories from past interactions:\n"
+		for _, mem := range relevantMemories {
+			memoryContext += fmt.Sprintf("- [%s] %s\n", mem.Category, mem.Content)
+			memoryStore.UpdateLastUsed(mem.ID)
+		}
+	}
+
+	// Get system info context
+	sysInfo := getSystemInfo()
+	sysContext := fmt.Sprintf("\n\n[System Context]\nOS: %s\nUser: %s\nCWD: %s\nCPU: %d%%\nRAM: %d/%d MB (%d%%)", 
+		sysInfo.OS, sysInfo.Username, sysInfo.CurrentDir, sysInfo.CPUUsage, sysInfo.RAMUsed, sysInfo.RAMTotal, sysInfo.RAMUsage)
+
+	activeSoul := soulStore.GetActiveSoul()
+	systemPrompt := activeSoul.SystemPrompt + memoryContext + sysContext
+
+	var messages []openai.ChatCompletionMessage
+	messages = append(messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: systemPrompt,
+	})
+	for _, msg := range session.Messages {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+	messages = append(messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: req.Message,
+	})
+
+	s := getSettings()
+	if s.ApiKey == "" {
+		http.Error(w, "API Key is missing.", http.StatusBadRequest)
+		return
+	}
+
+	client := getOpenAIClient()
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	stream, err := client.CreateChatCompletionStream(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model:    s.Model,
+			Messages: messages,
+			Tools:    []openai.Tool{powershellTool},
+			Stream:   true,
+		},
+	)
+	if err != nil {
+		log.Printf("Stream error: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer stream.Close()
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Save user message
+	chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "user", Content: req.Message})
+
+	var fullContent strings.Builder
+	var toolCallID, toolCallName, toolCallArgs string
+	hasToolCall := false
+
+	for {
+		response, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			// Send error event
+			errData, _ := json.Marshal(map[string]string{"type": "error", "content": err.Error()})
+			fmt.Fprintf(w, "data: %s\n\n", errData)
+			flusher.Flush()
+			break
+		}
+
+		delta := response.Choices[0].Delta
+
+		// Check for tool calls
+		if len(delta.ToolCalls) > 0 {
+			hasToolCall = true
+			for _, tc := range delta.ToolCalls {
+				if tc.ID != "" {
+					toolCallID = tc.ID
+				}
+				if tc.Function.Name != "" {
+					toolCallName = tc.Function.Name
+				}
+				toolCallArgs += tc.Function.Arguments
+			}
+			continue
+		}
+
+		// Regular content token
+		if delta.Content != "" {
+			fullContent.WriteString(delta.Content)
+			tokenData, _ := json.Marshal(map[string]string{
+				"type":    "token",
+				"content": delta.Content,
+			})
+			fmt.Fprintf(w, "data: %s\n\n", tokenData)
+			flusher.Flush()
+		}
+	}
+
+	// Save assistant message
+	chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "assistant", Content: fullContent.String()})
+
+	// Handle tool call if present
+	if hasToolCall && toolCallName == "run_powershell_command" {
+		var args map[string]string
+		json.Unmarshal([]byte(toolCallArgs), &args)
+
+		if toolCallID == "" {
+			toolCallID = generateID()
+		}
+
+		pendingCmd := &PendingCommand{
+			ID:          toolCallID,
+			SessionID:   session.ID,
+			Command:     args["command"],
+			Description: args["description"],
+		}
+
+		pendingCmdsMutex.Lock()
+		pendingCommands[toolCallID] = pendingCmd
+		pendingCmdsMutex.Unlock()
+
+		toolData, _ := json.Marshal(map[string]interface{}{
+			"type":    "tool_call",
+			"id":      toolCallID,
+			"command": args["command"],
+			"description": args["description"],
+		})
+		fmt.Fprintf(w, "data: %s\n\n", toolData)
+		flusher.Flush()
+	}
+
+	// Send done event
+	memStats := memoryStore.GetMemoryStats()
+	memoryCount := memStats["total"].(int)
+
+	doneData, _ := json.Marshal(map[string]interface{}{
+		"type":        "done",
+		"sessionId":   session.ID,
+		"activeSoul":  activeSoul.Name,
+		"soulEmoji":   activeSoul.Emoji,
+		"memoryCount": memoryCount,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", doneData)
+	flusher.Flush()
 }
