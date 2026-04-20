@@ -1,0 +1,74 @@
+<svg width="680" height="340" viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg">
+  <rect x="40" y="20" width="600" height="300" rx="20" fill="#1a1025"/>
+  <g stroke="#2e1f4a" stroke-width="0.5" opacity="0.6">
+    <line x1="40" y1="80" x2="640" y2="80"/><line x1="40" y1="140" x2="640" y2="140"/>
+    <line x1="40" y1="200" x2="640" y2="200"/><line x1="40" y1="260" x2="640" y2="260"/>
+    <line x1="120" y1="20" x2="120" y2="320"/><line x1="200" y1="20" x2="200" y2="320"/>
+    <line x1="280" y1="20" x2="280" y2="320"/><line x1="360" y1="20" x2="360" y2="320"/>
+    <line x1="440" y1="20" x2="440" y2="320"/><line x1="520" y1="20" x2="520" y2="320"/>
+    <line x1="600" y1="20" x2="600" y2="320"/>
+  </g>
+  <g stroke="#7F77DD" stroke-width="1.2" fill="none" opacity="0.5">
+    <polyline points="40,260 80,260 80,290 130,290"/>
+    <circle cx="130" cy="290" r="3" fill="#7F77DD"/>
+    <polyline points="640,110 600,110 600,80 550,80"/>
+    <circle cx="550" cy="80" r="3" fill="#7F77DD"/>
+    <polyline points="40,110 70,110 70,80 110,80"/>
+    <circle cx="110" cy="80" r="3" fill="#7F77DD"/>
+    <polyline points="640,260 610,260 610,290 570,290"/>
+    <circle cx="570" cy="290" r="3" fill="#7F77DD"/>
+  </g>
+  <polygon points="238,70 216,32 272,68" fill="#3C3489"/>
+  <polygon points="243,68 225,42 266,66" fill="#7F77DD" opacity="0.6"/>
+  <polygon points="442,70 464,32 408,68" fill="#3C3489"/>
+  <polygon points="437,68 455,42 414,66" fill="#7F77DD" opacity="0.6"/>
+  <ellipse cx="340" cy="170" rx="130" ry="115" fill="#26215C"/>
+  <ellipse cx="340" cy="170" rx="128" ry="113" fill="none" stroke="#534AB7" stroke-width="1.5"/>
+  <polyline points="300,98 300,86 340,82 380,86 380,98" fill="none" stroke="#7F77DD" stroke-width="1" opacity="0.7"/>
+  <circle cx="340" cy="82" r="2.5" fill="#AFA9EC"/>
+  <ellipse cx="302" cy="162" rx="28" ry="22" fill="#0F6E56" opacity="0.3"/>
+  <ellipse cx="378" cy="162" rx="28" ry="22" fill="#0F6E56" opacity="0.3"/>
+  <ellipse cx="302" cy="162" rx="22" ry="18" fill="#1D9E75"/>
+  <ellipse cx="378" cy="162" rx="22" ry="18" fill="#1D9E75"/>
+  <ellipse cx="302" cy="162" rx="7" ry="16" fill="#04342C"/>
+  <ellipse cx="378" cy="162" rx="7" ry="16" fill="#04342C"/>
+  <ellipse cx="296" cy="156" rx="4" ry="3" fill="#9FE1CB" opacity="0.8"/>
+  <ellipse cx="372" cy="156" rx="4" ry="3" fill="#9FE1CB" opacity="0.8"/>
+  <line x1="276" y1="162" x2="268" y2="162" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+  <line x1="328" y1="162" x2="336" y2="162" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+  <line x1="352" y1="162" x2="344" y2="162" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+  <line x1="404" y1="162" x2="412" y2="162" stroke="#5DCAA5" stroke-width="1" opacity="0.6"/>
+  <polygon points="340,190 332,198 348,198" fill="#D4537E"/>
+  <path d="M332,198 Q340,206 348,198" fill="none" stroke="#D4537E" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="340" y1="206" x2="340" y2="214" stroke="#D4537E" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="280" y1="194" x2="218" y2="188" stroke="#AFA9EC" stroke-width="1" opacity="0.7"/>
+  <line x1="280" y1="200" x2="218" y2="200" stroke="#AFA9EC" stroke-width="1" opacity="0.7"/>
+  <line x1="280" y1="206" x2="218" y2="212" stroke="#AFA9EC" stroke-width="1" opacity="0.7"/>
+  <line x1="400" y1="194" x2="462" y2="188" stroke="#AFA9EC" stroke-width="1" opacity="0.7"/>
+  <line x1="400" y1="200" x2="462" y2="200" stroke="#AFA9EC" stroke-width="1" opacity="0.7"/>
+  <line x1="400" y1="206" x2="462" y2="212" stroke="#AFA9EC" stroke-width="1" opacity="0.7"/>
+  <g stroke="#E24B4A" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.85">
+    <line x1="92" y1="130" x2="118" y2="175"/>
+    <line x1="104" y1="126" x2="130" y2="171"/>
+    <line x1="116" y1="124" x2="142" y2="169"/>
+  </g>
+  <g stroke="#E24B4A" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.85">
+    <line x1="588" y1="130" x2="562" y2="175"/>
+    <line x1="576" y1="126" x2="550" y2="171"/>
+    <line x1="564" y1="124" x2="538" y2="169"/>
+  </g>
+  <text x="340" y="256" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-size="30" font-weight="700" letter-spacing="3" fill="#EEEDFE">NEKO-CLAW</text>
+  <text x="340" y="278" text-anchor="middle" font-family="'Segoe UI', sans-serif" font-size="11" font-weight="400" letter-spacing="5" fill="#7F77DD">AI CONTROLLER</text>
+  <line x1="240" y1="288" x2="440" y2="288" stroke="#534AB7" stroke-width="0.5"/>
+  <circle cx="240" cy="288" r="2" fill="#AFA9EC"/>
+  <circle cx="440" cy="288" r="2" fill="#AFA9EC"/>
+  <circle cx="340" cy="288" r="2" fill="#AFA9EC"/>
+  <rect x="48" y="28" width="16" height="2" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="48" y="28" width="2" height="16" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="616" y="28" width="16" height="2" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="630" y="28" width="2" height="16" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="48" y="310" width="16" height="2" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="48" y="296" width="2" height="16" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="616" y="310" width="16" height="2" rx="1" fill="#534AB7" opacity="0.6"/>
+  <rect x="630" y="296" width="2" height="16" rx="1" fill="#534AB7" opacity="0.6"/>
+</svg>
