@@ -54,6 +54,26 @@ var powershellTool = openai.Tool{
 	},
 }
 
+var playwrightTool = openai.Tool{
+	Type: openai.ToolTypeFunction,
+	Function: &openai.FunctionDefinition{
+		Name:        "web_search_and_read",
+		Description: "Open a web browser, navigate to a URL, and extract the text content. Use this for web search (e.g. duckduckgo html search) and scraping. Provide a fully qualified URL like 'https://html.duckduckgo.com/html/?q=my+query'.",
+		Parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"url": {
+					"type": "string",
+					"description": "The full URL to navigate to."
+				}
+			},
+			"required": ["url"]
+		}`),
+	},
+}
+
+var availableTools = []openai.Tool{powershellTool, playwrightTool}
+
 func getOpenAIClient() *openai.Client {
 	s := getSettings()
 
@@ -146,7 +166,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		openai.ChatCompletionRequest{
 			Model:    s.Model,
 			Messages: messages,
-			Tools:    []openai.Tool{powershellTool},
+			Tools:    availableTools,
 		},
 	)
 
@@ -205,7 +225,46 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				if res.Reply == "" {
 					res.Reply = fmt.Sprintf("I need to run a command: %s", args["description"])
 				}
-				// Break after processing the first tool call (UI handles one at a time)
+			} else if toolCall.Function.Name == "web_search_and_read" {
+				var args map[string]string
+				json.Unmarshal([]byte(toolCall.Function.Arguments), &args)
+
+				url := args["url"]
+				if res.Reply == "" {
+					res.Reply = fmt.Sprintf("I am searching the web at %s...", url)
+				}
+
+				// Execute inline and don't need approval for search
+				// Actually wait, handleChat is non-streaming and doesn't handle multiple iterations easily.
+				// For now, let's just do a single loop if it's a web search.
+				content, err := searchWebAndRead(url)
+				if err != nil {
+					content = fmt.Sprintf("Error searching web: %v", err)
+				}
+
+				messages = append(messages, openai.ChatCompletionMessage{
+					Role:       openai.ChatMessageRoleTool,
+					Content:    content,
+					ToolCallID: toolCall.ID,
+				})
+
+				// Call API again
+				resp2, err2 := client.CreateChatCompletion(
+					ctx,
+					openai.ChatCompletionRequest{
+						Model:    s.Model,
+						Messages: messages,
+						Tools:    availableTools,
+					},
+				)
+
+				if err2 == nil && len(resp2.Choices) > 0 {
+					choice = resp2.Choices[0]
+					res.Reply = choice.Message.Content
+					chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "assistant", Content: res.Reply})
+				}
+
+				// Break after processing tool
 				break
 			}
 		}
@@ -301,7 +360,7 @@ func handleApproveCommand(w http.ResponseWriter, r *http.Request) {
 		openai.ChatCompletionRequest{
 			Model:    s.Model,
 			Messages: messages,
-			Tools:    []openai.Tool{powershellTool},
+			Tools:    availableTools,
 		},
 	)
 
@@ -436,7 +495,7 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 		openai.ChatCompletionRequest{
 			Model:    s.Model,
 			Messages: messages,
-			Tools:    []openai.Tool{powershellTool},
+			Tools:    availableTools,
 			Stream:   true,
 		},
 	)
@@ -508,36 +567,109 @@ func handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save assistant message
-	chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "assistant", Content: fullContent.String()})
+	if fullContent.Len() > 0 {
+		chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "assistant", Content: fullContent.String()})
+	}
 
 	// Handle tool call if present
-	if hasToolCall && toolCallName == "run_powershell_command" {
-		var args map[string]string
-		json.Unmarshal([]byte(toolCallArgs), &args)
-
+	if hasToolCall {
 		if toolCallID == "" {
 			toolCallID = generateID()
 		}
 
-		pendingCmd := &PendingCommand{
-			ID:          toolCallID,
-			SessionID:   session.ID,
-			Command:     args["command"],
-			Description: args["description"],
+		if toolCallName == "run_powershell_command" {
+			var args map[string]string
+			json.Unmarshal([]byte(toolCallArgs), &args)
+
+			pendingCmd := &PendingCommand{
+				ID:          toolCallID,
+				SessionID:   session.ID,
+				Command:     args["command"],
+				Description: args["description"],
+			}
+
+			pendingCmdsMutex.Lock()
+			pendingCommands[toolCallID] = pendingCmd
+			pendingCmdsMutex.Unlock()
+
+			toolData, _ := json.Marshal(map[string]interface{}{
+				"type":    "tool_call",
+				"id":      toolCallID,
+				"command": args["command"],
+				"description": args["description"],
+			})
+			fmt.Fprintf(w, "data: %s\n\n", toolData)
+			flusher.Flush()
+		} else if toolCallName == "web_search_and_read" {
+			var args map[string]string
+			json.Unmarshal([]byte(toolCallArgs), &args)
+			url := args["url"]
+
+			// Notify UI that we are searching
+			statusData, _ := json.Marshal(map[string]string{
+				"type":    "token",
+				"content": fmt.Sprintf("\n*Searching web: %s*\n", url),
+			})
+			fmt.Fprintf(w, "data: %s\n\n", statusData)
+			flusher.Flush()
+
+			content, err := searchWebAndRead(url)
+			if err != nil {
+				content = fmt.Sprintf("Error searching web: %v", err)
+			}
+
+			messages = append(messages, openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleAssistant,
+				ToolCalls:  []openai.ToolCall{{
+					ID: toolCallID,
+					Type: openai.ToolTypeFunction,
+					Function: openai.FunctionCall{
+						Name: toolCallName,
+						Arguments: toolCallArgs,
+					},
+				}},
+			})
+
+			messages = append(messages, openai.ChatCompletionMessage{
+				Role:       openai.ChatMessageRoleTool,
+				Content:    content,
+				ToolCallID: toolCallID,
+			})
+
+			// Call stream again with tool result
+			stream2, err2 := client.CreateChatCompletionStream(
+				ctx,
+				openai.ChatCompletionRequest{
+					Model:    s.Model,
+					Messages: messages,
+					Tools:    availableTools,
+					Stream:   true,
+				},
+			)
+			if err2 == nil {
+				var finalContent strings.Builder
+				for {
+					response2, err := stream2.Recv()
+					if err != nil {
+						break
+					}
+					delta2 := response2.Choices[0].Delta
+					if delta2.Content != "" {
+						finalContent.WriteString(delta2.Content)
+						tokenData, _ := json.Marshal(map[string]string{
+							"type":    "token",
+							"content": delta2.Content,
+						})
+						fmt.Fprintf(w, "data: %s\n\n", tokenData)
+						flusher.Flush()
+					}
+				}
+				stream2.Close()
+				if finalContent.Len() > 0 {
+					chatHistoryStore.AddMessage(session.ID, ChatMessage{Role: "assistant", Content: finalContent.String()})
+				}
+			}
 		}
-
-		pendingCmdsMutex.Lock()
-		pendingCommands[toolCallID] = pendingCmd
-		pendingCmdsMutex.Unlock()
-
-		toolData, _ := json.Marshal(map[string]interface{}{
-			"type":    "tool_call",
-			"id":      toolCallID,
-			"command": args["command"],
-			"description": args["description"],
-		})
-		fmt.Fprintf(w, "data: %s\n\n", toolData)
-		flusher.Flush()
 	}
 
 	// Send done event
