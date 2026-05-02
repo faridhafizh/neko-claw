@@ -2,12 +2,47 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 
 	"github.com/playwright-community/playwright-go"
 )
 
-func searchWebAndRead(url string) (string, error) {
+func isSafeURL(targetURL string) error {
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid scheme: only http and https are allowed")
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("invalid URL: missing host")
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("could not resolve host: %w", err)
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("URL resolves to a private or reserved IP address")
+		}
+	}
+
+	return nil
+}
+
+func searchWebAndRead(targetURL string) (string, error) {
+	if err := isSafeURL(targetURL); err != nil {
+		return "", fmt.Errorf("unsafe URL: %w", err)
+	}
+
 	pw, err := playwright.Run()
 	if err != nil {
 		return "", fmt.Errorf("could not start playwright: %w", err)
@@ -27,7 +62,7 @@ func searchWebAndRead(url string) (string, error) {
 		return "", fmt.Errorf("could not create page: %w", err)
 	}
 
-	if _, err = page.Goto(url, playwright.PageGotoOptions{
+	if _, err = page.Goto(targetURL, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateNetworkidle,
 	}); err != nil {
 		return "", fmt.Errorf("could not goto: %w", err)
